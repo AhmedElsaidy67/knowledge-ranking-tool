@@ -1,25 +1,25 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 
-# 1. إعدادات الصفحة
+# 1. Page Configuration
 st.set_page_config(page_title="Knowledge Prioritization Tool", layout="wide")
 
-# صف علوي لتوزيع العنوان وزر التمبلت
 header_col, btn_col = st.columns([4, 1])
 
 with header_col:
     st.title("📊 Knowledge Priority Ranking Tool")
-    st.markdown("Upload the Excel file and adjust the points to get the best ranking for the review.")
+    st.markdown("Upload multiple Excel files, automatically extract all embedded Knowledge IDs, merge clean data, and generate prioritized rankings.")
 
-# دالة مساعدة لتحويل الملف لـ Excel (XLSX) للتحميل
+# Helper function to convert DataFrames to downloadable XLSX
 def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Sheet1')
     return output.getvalue()
 
-# --- 2. القائمة الجانبية (Sidebar) ---
+# --- 2. Sidebar Configuration ---
 st.sidebar.header("⚙️ Configure Points")
 
 with st.sidebar.expander("Views Points", expanded=True):
@@ -28,111 +28,247 @@ with st.sidebar.expander("Views Points", expanded=True):
     p_v_50 = st.number_input("50 or more", value=0.50)
 
 with st.sidebar.expander("Scores Points"):
-    p_nssd = st.number_input("NSSD (1,2,3)", value=2.0)
-    p_fcr = st.number_input("FCR (If 'No')", value=2.0)  # تم توضيح أنها في حالة No
+    p_nssd = st.number_input("NSSD (Very unsatisfied, Unsatisfactory, Normal)", value=2.0)
+    p_fcr = st.number_input("FCR (If 'N' or 'No')", value=2.0)
     p_feedback = st.number_input("Feedback (If 'Yes')", value=1.0)
     p_top3 = st.number_input("Search Top 3", value=1.0)
     p_top10 = st.number_input("Search Top 10", value=0.5)
-    p_qa = st.number_input("QA/RCA Issue (If 'Yes')", value=1.0)
+    # فصل معيار QA و RCA
+    p_qa = st.number_input("QA Issue (If 'Yes')", value=1.0)
+    p_rca = st.number_input("RCA Issue (If 'Yes')", value=1.0)
 
 with st.sidebar.expander("➕ Add Custom Field"):
     custom_col_name = st.text_input("Column Name in Excel", placeholder="e.g. Critical_Error")
     custom_col_points = st.number_input("Points for 'Yes'", value=0.0)
 
-# --- 3. زر التمبلت (موضع جديد في أعلى اليمين) ---
-template_cols = ['Knowledge ID', 'Views', 'NSSD', 'FCR', 'Feedback"Yes or No"', 'Search Accuracy', 'QA_RCA_Issues"Yes or No"']
-if custom_col_name:
-    template_cols.append(custom_col_name)
+with st.sidebar.expander("🔄 Column Name Mapping (Alternative Names)"):
+    st.caption("Provide comma-separated alternative column names if header names differ across sheets.")
+    alt_title = st.text_input("Alternative names for 'Knowledge Title'", placeholder="Title, Article_Title")
+    alt_type = st.text_input("Alternative names for 'Knowledge Type'", placeholder="Type, Article_Type")
+    alt_views = st.text_input("Alternative names for 'Views'", placeholder="Page_Views, View_Count")
+    alt_nssd = st.text_input("Alternative names for 'NSSD'", placeholder="NSSD_Score, Priority")
+    alt_fcr = st.text_input("Alternative names for 'FCR'", placeholder="FCR_Status, First_Call")
+    alt_feedback = st.text_input("Alternative names for 'Feedback'", placeholder="User_Feedback, Feedback_Given")
+    alt_search = st.text_input("Alternative names for 'Search Accuracy'", placeholder="Search_Rank, Accuracy")
+    alt_qa = st.text_input("Alternative names for 'QA Issues'", placeholder="QA_Issue, QA_Flag")
+    alt_rca = st.text_input("Alternative names for 'RCA Issues'", placeholder="RCA_Issue, RCA_Flag")
 
-template_df = pd.DataFrame(columns=template_cols)
+# --- 3. Base Template Columns (شامل الخانات الجديدة) ---
+base_template_cols = [
+    'Knowledge ID', 
+    'Knowledge Title', 
+    'Knowledge Type', 
+    'Views', 
+    'NSSD', 
+    'FCR', 
+    'Feedback"Yes or No"', 
+    'Search Accuracy', 
+    'QA Issues"Yes or No"', 
+    'RCA Issues"Yes or No"'
+]
+
+if custom_col_name:
+    base_template_cols.append(custom_col_name)
+
+template_df = pd.DataFrame(columns=base_template_cols)
+
 with btn_col:
-    st.write("") # لإزاحة الزر قليلاً للأسفل ليتساوى مع العنوان
+    st.write("")
     st.download_button(
-        label="📥 Template",
+        label="📥 Download Template",
         data=to_excel(template_df),
         file_name="Knowledge_Template.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        help="Download an empty template with correct headers"
+        help="Download clean template"
     )
 
-# --- 4. رفع الملف ---
-st.subheader("📤 Upload & Process")
-uploaded_file = st.file_uploader("Upload your filled Excel file", type=["xlsx"])
+# --- 4. File Upload & Processing Trigger ---
+st.subheader("📤 Step 1: Upload Excel Files")
+uploaded_files = st.file_uploader("Upload all Excel files", type=["xlsx"], accept_multiple_files=True)
 
-if uploaded_file:
-    try:
-        df = pd.read_excel(uploaded_file)
-        df.columns = [c.strip() for c in df.columns]
+if uploaded_files:
+    # Trigger button so execution only begins when explicitly requested
+    if st.button("⚡ Extract & Merge Data"):
+        try:
+            all_extracted_rows = []
 
-        def calculate_priority(row):
-            score = 0.0 # ضمان التعامل مع الأرقام العشرية
-            
-            # ① Views
-            try:
-                v = float(row.get('Views', 0))
-                if v >= 1000: score += p_v_1k
-                elif v >= 100: score += p_v_100
-                elif v >= 50: score += p_v_50
-            except: pass
+            # Advanced regex to match: en-us00406918, en-us-vol00731263, en-us-map16019302
+            id_pattern = re.compile(r'en-us(?:-[a-zA-Z0-9]+)?\d+', re.IGNORECASE)
 
-            # ② NSSD (Points if 1, 2, or 3)
-            if str(row.get('NSSD')).strip() in ['1', '2', '3', 1, 2, 3]:
-                score += p_nssd
+            # Prepare progress bar indicators
+            total_files = len(uploaded_files)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
 
-            # ③ FCR (Important: Points if 'No')
-            fcr_val = str(row.get('FCR', '')).strip().lower()
-            if fcr_val == "no":
-                score += p_fcr
+            for file_idx, uploaded_file in enumerate(uploaded_files):
+                xls = pd.ExcelFile(uploaded_file)
+                num_sheets = len(xls.sheet_names)
 
-            # ④ Feedback (Points if 'Yes')
-            fb_val = str(row.get('Feedback"Yes or No"', '')).strip().lower()
-            if fb_val == "yes":
-                score += p_feedback
+                for sheet_idx, sheet_name in enumerate(xls.sheet_names):
+                    # Update progress percentage
+                    current_progress = (file_idx + (sheet_idx + 1) / num_sheets) / total_files
+                    progress_bar.progress(min(current_progress, 1.0))
+                    status_text.text(f"Processing File {file_idx + 1}/{total_files}: '{uploaded_file.name}' | Sheet: '{sheet_name}'...")
 
-            # ⑤ Search Accuracy
-            acc = str(row.get('Search Accuracy', '')).strip().lower()
-            if "top 3" in acc: score += p_top3
-            elif "top 10" in acc: score += p_top10
+                    df_temp = pd.read_excel(xls, sheet_name=sheet_name)
+                    df_temp.columns = [str(c).strip() for c in df_temp.columns]
 
-            # ⑥ QA_RCA_Issues (Points if 'Yes')
-            qa_val = str(row.get('QA_RCA_Issues"Yes or No"', '')).strip().lower()
-            if qa_val == "yes":
-                score += p_qa
+                    # Scan rows for matches
+                    for idx, row in df_temp.iterrows():
+                        row_ids = set()
+                        
+                        for col in df_temp.columns:
+                            cell_value = str(row[col])
+                            # Extract ALL matches within the cell
+                            matches = id_pattern.findall(cell_value)
+                            for match in matches:
+                                row_ids.add(match.lower())
+                        
+                        # Generate an entry for every distinct Knowledge ID found in this row
+                        for found_id in row_ids:
+                            row_data = row.to_dict()
+                            row_data['Knowledge ID'] = found_id
+                            all_extracted_rows.append(row_data)
 
-            # ⑦ Custom Field (Points if 'Yes')
-            if custom_col_name in df.columns:
-                c_val = str(row.get(custom_col_name, '')).strip().lower()
-                if c_val == "yes":
-                    score += custom_col_points
+            progress_bar.progress(1.0)
+            status_text.success("🎉 File extraction and scanning completed successfully!")
 
-            return score
+            if not all_extracted_rows:
+                st.error("❌ No matching Knowledge IDs (e.g., en-us, en-us-vol, en-us-map) were found in the uploaded files.")
+            else:
+                raw_df = pd.DataFrame(all_extracted_rows)
 
-        if st.button("🚀 Run Ranking Analysis"):
-            df['Final_Score'] = df.apply(calculate_priority, axis=1)
-            df_sorted = df.sort_values(by='Final_Score', ascending=False).reset_index(drop=True)
-            
-            def get_rank_label(i):
-                if i < 50: return "High (Top 50)"
-                elif i < 100: return "Medium (Top 100)"
-                elif i < 200: return "Normal (Top 200)"
-                else: return "Low (Over 200)"
-            
-            df_sorted['Category'] = [get_rank_label(i) for i in range(len(df_sorted))]
+                # Column name unification (معالجة كافة الأعمدة)
+                mapping_rules = {
+                    'Knowledge Title': [x.strip() for x in alt_title.split(',') if x.strip()],
+                    'Knowledge Type': [x.strip() for x in alt_type.split(',') if x.strip()],
+                    'Views': [x.strip() for x in alt_views.split(',') if x.strip()],
+                    'NSSD': [x.strip() for x in alt_nssd.split(',') if x.strip()],
+                    'FCR': [x.strip() for x in alt_fcr.split(',') if x.strip()],
+                    'Feedback"Yes or No"': [x.strip() for x in alt_feedback.split(',') if x.strip()],
+                    'Search Accuracy': [x.strip() for x in alt_search.split(',') if x.strip()],
+                    'QA Issues"Yes or No"': [x.strip() for x in alt_qa.split(',') if x.strip()],
+                    'RCA Issues"Yes or No"': [x.strip() for x in alt_rca.split(',') if x.strip()]
+                }
 
-            st.balloons()
-            t1, t2, t3, t4 = st.tabs(["🔴 Top 50", "🟠 Top 100", "🟡 Top 200", "📄 All Data"])
-            
-            with t1: st.dataframe(df_sorted[df_sorted['Category'] == "High (Top 50)"])
-            with t2: st.dataframe(df_sorted[df_sorted['Category'] == "Medium (Top 100)"])
-            with t3: st.dataframe(df_sorted[df_sorted['Category'] == "Normal (Top 200)"])
-            with t4: st.dataframe(df_sorted)
+                for target_col, alt_cols in mapping_rules.items():
+                    if target_col not in raw_df.columns:
+                        raw_df[target_col] = None
+                    for alt in alt_cols:
+                        if alt in raw_df.columns:
+                            raw_df[target_col] = raw_df[target_col].fillna(raw_df[alt])
 
-            st.download_button(
-                label="📥 Download Final Ranked Report (XLSX)",
-                data=to_excel(df_sorted),
-                file_name="Final_Ranking_Report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                # Deduplicate and group entries by Knowledge ID
+                merged_df = raw_df.groupby('Knowledge ID', as_index=False).first()
 
-    except Exception as e:
-        st.error(f"Error: {e}")
+                # Filter down to the required template columns only
+                final_cols_needed = [col for col in base_template_cols if col in merged_df.columns]
+                clean_df = merged_df[final_cols_needed].copy()
+
+                for col in base_template_cols:
+                    if col not in clean_df.columns:
+                        clean_df[col] = None
+
+                # Store the cleaned DataFrame in Session State to retain across interactions
+                st.session_state['clean_df'] = clean_df
+
+        except Exception as e:
+            st.error(f"An error occurred during file extraction: {e}")
+
+# --- 5. Data Ranking & Output Sections ---
+if 'clean_df' in st.session_state:
+    clean_df = st.session_state['clean_df']
+    st.success(f"✅ Extracted and merged ({len(clean_df)}) unique Knowledge IDs successfully!")
+
+    with st.expander("📋 Download Clean Merged Data (Pre-Ranking)"):
+        st.info("This file contains the consolidated raw data with unified columns prior to calculating points.")
+        st.download_button(
+            label="📥 Download Clean Merged Sheet (.xlsx)",
+            data=to_excel(clean_df[base_template_cols]),
+            file_name="Clean_Merged_Data.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    # Calculation logic
+    def calculate_priority(row):
+        score = 0.0
+        
+        # Views
+        try:
+            v = float(row.get('Views', 0))
+            if v >= 1000: score += p_v_1k
+            elif v >= 100: score += p_v_100
+            elif v >= 50: score += p_v_50
+        except: pass
+
+        # NSSD (Checks for 1, 2, 3 OR Very unsatisfied, Unsatisfactory, Normal)
+        nssd_val = str(row.get('NSSD', '')).strip().lower()
+        if nssd_val in ['1', '2', '3', 'very unsatisfied', 'unsatisfactory', 'normal']:
+            score += p_nssd
+
+        # FCR (Points if 'n' OR 'no')
+        fcr_val = str(row.get('FCR', '')).strip().lower()
+        if fcr_val in ["n", "no"]:
+            score += p_fcr
+
+        # Feedback (Points if 'Yes')
+        fb_val = str(row.get('Feedback"Yes or No"', '')).strip().lower()
+        if fb_val == "yes":
+            score += p_feedback
+
+        # Search Accuracy
+        acc = str(row.get('Search Accuracy', '')).strip().lower()
+        if "top 3" in acc: score += p_top3
+        elif "top 10" in acc: score += p_top10
+
+        # QA Issues (Points if 'Yes')
+        qa_val = str(row.get('QA Issues"Yes or No"', '')).strip().lower()
+        if qa_val == "yes":
+            score += p_qa
+
+        # RCA Issues (Points if 'Yes')
+        rca_val = str(row.get('RCA Issues"Yes or No"', '')).strip().lower()
+        if rca_val == "yes":
+            score += p_rca
+
+        # Custom Field
+        if custom_col_name in clean_df.columns:
+            c_val = str(row.get(custom_col_name, '')).strip().lower()
+            if c_val == "yes":
+                score += custom_col_points
+
+        return score
+
+    st.subheader("🚀 Step 2: Run Prioritization")
+    if st.button("🚀 Calculate & Rank Priority"):
+        clean_df['Final_Score'] = clean_df.apply(calculate_priority, axis=1)
+        
+        # Sort descending
+        df_sorted = clean_df.sort_values(by='Final_Score', ascending=False).reset_index(drop=True)
+
+        def get_rank_label(i):
+            if i < 50: return "High (Top 50)"
+            elif i < 100: return "Medium (Top 100)"
+            elif i < 200: return "Normal (Top 200)"
+            else: return "Low (Over 200)"
+        
+        df_sorted['Category'] = [get_rank_label(i) for i in range(len(df_sorted))]
+
+        # Reorder columns to show essential identifier & title data first
+        export_columns = ['Knowledge ID', 'Knowledge Title', 'Knowledge Type', 'Final_Score', 'Category'] + [c for c in base_template_cols if c not in ['Knowledge ID', 'Knowledge Title', 'Knowledge Type']]
+        df_final_export = df_sorted[export_columns]
+
+        st.balloons()
+        t1, t2, t3, t4 = st.tabs(["🔴 Top 50", "🟠 Top 100", "🟡 Top 200", "📄 All Data"])
+        
+        with t1: st.dataframe(df_final_export[df_final_export['Category'] == "High (Top 50)"])
+        with t2: st.dataframe(df_final_export[df_final_export['Category'] == "Medium (Top 100)"])
+        with t3: st.dataframe(df_final_export[df_final_export['Category'] == "Normal (Top 200)"])
+        with t4: st.dataframe(df_final_export)
+
+        st.download_button(
+            label="📥 Download Final Clean Ranked Report (.xlsx)",
+            data=to_excel(df_final_export),
+            file_name="Final_Clean_Ranked_Report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
