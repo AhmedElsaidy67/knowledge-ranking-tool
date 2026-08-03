@@ -177,14 +177,26 @@ if uploaded_files:
                     fcr_vals = [str(x).strip().lower() for x in group['FCR'].dropna()]
                     fcr_issues_count = sum(1 for x in fcr_vals if x in ['n', 'no'])
                     res['FCR_Issue_Count'] = fcr_issues_count
-                    res['FCR'] = 'N' if fcr_issues_count > 0 else (fcr_vals[0] if fcr_vals else None)
+                    res['FCR'] = 'No' if fcr_issues_count > 0 else (fcr_vals[0] if fcr_vals else None)
 
-                    # 2. عد تكرارات مشاكل NSSD (الصفوف الفريدة التي احتوت على قيم المشاكل)
+                    # 2. عد تكرارات مشاكل NSSD والحفاظ على القيمة النصية الأصلية
                     bad_nssd_list = ['1', '2', '3', 'very unsatisfied', 'unsatisfactory', 'normal']
-                    nssd_vals = [str(x).strip().lower() for x in group['NSSD'].dropna()]
-                    nssd_issues_count = sum(1 for x in nssd_vals if x in bad_nssd_list)
+                    
+                    # استخراج القيم النصية الأصلية غير التافهة
+                    raw_nssd_list = [x for x in group['NSSD'].dropna() if str(x).strip()]
+                    
+                    nssd_issues_count = 0
+                    first_bad_val = None
+                    
+                    for val in raw_nssd_list:
+                        if str(val).strip().lower() in bad_nssd_list:
+                            nssd_issues_count += 1
+                            if first_bad_val is None:
+                                first_bad_val = val # الاحتفاظ بالنص الأصلي لـ NSSD بدلاً من كلمة Issue
+
                     res['NSSD_Issue_Count'] = nssd_issues_count
-                    res['NSSD'] = 'Issue' if nssd_issues_count > 0 else (nssd_vals[0] if nssd_vals else None)
+                    # وضع النص الأصلي للمشكلة عند وجودها
+                    res['NSSD'] = first_bad_val if first_bad_val is not None else (raw_nssd_list[0] if raw_nssd_list else None)
 
                     # 3. الفحص عن أية إجابات Yes في الخانات الأخرى
                     for bool_col in ['Feedback"Yes or No"', 'QA Issues"Yes or No"', 'RCA Issues"Yes or No"']:
