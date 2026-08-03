@@ -20,12 +20,31 @@ def to_excel(df):
     return output.getvalue()
 
 # --- 2. Sidebar Configuration ---
-st.sidebar.header("⚙️ Configure Points")
+st.sidebar.header("⚙️ Configure Points & Thresholds")
 
-with st.sidebar.expander("Views Points", expanded=True):
-    p_v_1k = st.number_input("1K views or more", value=2.0)
-    p_v_100 = st.number_input("100 or more", value=1.0)
-    p_v_50 = st.number_input("50 or more", value=0.50)
+# [التصميم الجديد المميز لـ Views Thresholds باستخدام الكروت والرموز البصرية]
+with st.sidebar.expander("👁️ Views Thresholds & Points", expanded=True):
+    st.markdown("---")
+    
+    # High Views Range Card
+    with st.container(border=True):
+        st.markdown("#### 🚀 High Views Range")
+        v_high_thresh = st.number_input("Threshold (Min Views)", value=1000, step=50, key="vh_t")
+        p_v_1k = st.number_input("Points Awarded", value=2.0, key="vh_p")
+    
+    # Medium Views Range Card
+    with st.container(border=True):
+        st.markdown("#### 📈 Medium Views Range")
+        v_med_thresh = st.number_input("Threshold (Min Views)", value=100, step=10, key="vm_t")
+        p_v_100 = st.number_input("Points Awarded", value=1.0, key="vm_p")
+    
+    # Low Views Range Card
+    with st.container(border=True):
+        st.markdown("#### 📉 Low Views Range")
+        v_low_thresh = st.number_input("Threshold (Min Views)", value=50, step=5, key="vl_t")
+        p_v_50 = st.number_input("Points Awarded", value=0.50, key="vl_p")
+        
+    st.markdown("---")
 
 with st.sidebar.expander("Scores Points"):
     p_nssd = st.number_input("NSSD (Very unsatisfied, Unsatisfactory, Normal)", value=2.0)
@@ -113,6 +132,9 @@ if uploaded_files:
                     df_temp = pd.read_excel(xls, sheet_name=sheet_name)
                     df_temp.columns = [str(c).strip() for c in df_temp.columns]
 
+                    # معرف فريد للشيت لتسجيل التكرارات لكل شيت بشكل مستقل
+                    sheet_source_id = f"{file_idx}_{sheet_idx}"
+
                     # Scan rows for matches
                     for idx, row in df_temp.iterrows():
                         row_ids = set()
@@ -128,6 +150,7 @@ if uploaded_files:
                         for found_id in row_ids:
                             row_data = row.to_dict()
                             row_data['Knowledge ID'] = found_id
+                            row_data['_Sheet_Source'] = sheet_source_id
                             all_extracted_rows.append(row_data)
 
             progress_bar.progress(1.0)
@@ -158,11 +181,45 @@ if uploaded_files:
                         if alt in raw_df.columns:
                             raw_df[target_col] = raw_df[target_col].fillna(raw_df[alt])
 
-                # Deduplicate and group entries by Knowledge ID
-                merged_df = raw_df.groupby('Knowledge ID', as_index=False).first()
+                # حساب عدد مرات تكرار الـ ID داخل كل شيت على حدة
+                sheet_counts = raw_df.groupby(['Knowledge ID', '_Sheet_Source']).size().reset_index(name='Sheet_Occurrences')
+
+                # دمج ذكي يلتقط أي نتيجة سلبية في NSSD أو FCR لو ظهرت في أي مرة
+                def aggregate_smart_group(group):
+                    res = group.iloc[0].to_dict()
+                    
+                    # فحص NSSD السلبي عبر كل مرات الظهور
+                    nssd_vals = [str(x).strip().lower() for x in group['NSSD'].dropna()]
+                    bad_nssds = [x for x in nssd_vals if x in ['1', '2', '3', 'very unsatisfied', 'unsatisfactory', 'normal']]
+                    if bad_nssds:
+                        res['NSSD'] = bad_nssds[0]
+
+                    # فحص FCR السلبي عبر كل مرات الظهور
+                    fcr_vals = [str(x).strip().lower() for x in group['FCR'].dropna()]
+                    if any(x in ['n', 'no'] for x in fcr_vals):
+                        res['FCR'] = 'N'
+
+                    # فحص أية إجابات Yes في الخانات الأخرى
+                    for bool_col in ['Feedback"Yes or No"', 'QA Issues"Yes or No"', 'RCA Issues"Yes or No"']:
+                        vals = [str(x).strip().lower() for x in group[bool_col].dropna()]
+                        if any(x == 'yes' for x in vals):
+                            res[bool_col] = 'Yes'
+
+                    # أعلى عدد مشاهدات
+                    try:
+                        res['Views'] = group['Views'].astype(float).max()
+                    except: pass
+
+                    return pd.Series(res)
+
+                merged_df = raw_df.groupby('Knowledge ID', as_index=False).apply(aggregate_smart_group).reset_index(drop=True)
+
+                # دمج أقصى عدد تكرارات في شيت واحد لتطبيقه في المعالجة
+                max_sheet_rep = sheet_counts.groupby('Knowledge ID')['Sheet_Occurrences'].max().reset_index()
+                merged_df = merged_df.merge(max_sheet_rep, on='Knowledge ID', how='left')
 
                 # Filter down to the required template columns only
-                final_cols_needed = [col for col in base_template_cols if col in merged_df.columns]
+                final_cols_needed = [col for col in base_template_cols if col in merged_df.columns] + ['Sheet_Occurrences']
                 clean_df = merged_df[final_cols_needed].copy()
 
                 for col in base_template_cols:
@@ -191,53 +248,55 @@ if 'clean_df' in st.session_state:
 
     # Calculation logic
     def calculate_priority(row):
-        score = 0.0
+        base_score = 0.0
         
-        # Views
+        # Views مع الحدود الديناميكية من الـ Sidebar
         try:
             v = float(row.get('Views', 0))
-            if v >= 1000: score += p_v_1k
-            elif v >= 100: score += p_v_100
-            elif v >= 50: score += p_v_50
+            if v >= v_high_thresh: base_score += p_v_1k
+            elif v >= v_med_thresh: base_score += p_v_100
+            elif v >= v_low_thresh: base_score += p_v_50
         except: pass
 
         # NSSD (Checks for 1, 2, 3 OR Very unsatisfied, Unsatisfactory, Normal)
         nssd_val = str(row.get('NSSD', '')).strip().lower()
         if nssd_val in ['1', '2', '3', 'very unsatisfied', 'unsatisfactory', 'normal']:
-            score += p_nssd
+            base_score += p_nssd
 
         # FCR (Points if 'n' OR 'no')
         fcr_val = str(row.get('FCR', '')).strip().lower()
         if fcr_val in ["n", "no"]:
-            score += p_fcr
+            base_score += p_fcr
 
         # Feedback (Points if 'Yes')
         fb_val = str(row.get('Feedback"Yes or No"', '')).strip().lower()
         if fb_val == "yes":
-            score += p_feedback
+            base_score += p_feedback
 
         # Search Accuracy
         acc = str(row.get('Search Accuracy', '')).strip().lower()
-        if "top 3" in acc: score += p_top3
-        elif "top 10" in acc: score += p_top10
+        if "top 3" in acc: base_score += p_top3
+        elif "top 10" in acc: base_score += p_top10
 
         # QA Issues (Points if 'Yes')
         qa_val = str(row.get('QA Issues"Yes or No"', '')).strip().lower()
         if qa_val == "yes":
-            score += p_qa
+            base_score += p_qa
 
         # RCA Issues (Points if 'Yes')
         rca_val = str(row.get('RCA Issues"Yes or No"', '')).strip().lower()
         if rca_val == "yes":
-            score += p_rca
+            base_score += p_rca
 
         # Custom Field
         if custom_col_name in clean_df.columns:
             c_val = str(row.get(custom_col_name, '')).strip().lower()
             if c_val == "yes":
-                score += custom_col_points
+                base_score += custom_col_points
 
-        return score
+        # ضرب النقاط الأساسية في عدد مرات التكرار داخل الشيت الواحد
+        sheet_multiplier = float(row.get('Sheet_Occurrences', 1))
+        return base_score * sheet_multiplier
 
     st.subheader("🚀 Step 2: Run Prioritization")
     if st.button("🚀 Calculate & Rank Priority"):
