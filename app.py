@@ -10,7 +10,7 @@ header_col, btn_col = st.columns([4, 1])
 
 with header_col:
     st.title("📊 Knowledge Priority Ranking Tool")
-    st.markdown("Upload multiple Excel files, automatically extract all embedded Knowledge IDs, merge clean data, and generate prioritized rankings.")
+    st.markdown("Upload multiple Excel files, automatically extract embedded Knowledge IDs, aggregate unique problem occurrences for FCR & NSSD, and generate rankings.")
 
 # Helper function to convert DataFrames to downloadable XLSX
 def to_excel(df):
@@ -22,7 +22,7 @@ def to_excel(df):
 # --- 2. Sidebar Configuration ---
 st.sidebar.header("⚙️ Configure Points & Thresholds")
 
-# [التصميم الجديد المميز لـ Views Thresholds باستخدام الكروت والرموز البصرية]
+# Views Thresholds Cards
 with st.sidebar.expander("👁️ Views Thresholds & Points", expanded=True):
     st.markdown("---")
     
@@ -47,12 +47,11 @@ with st.sidebar.expander("👁️ Views Thresholds & Points", expanded=True):
     st.markdown("---")
 
 with st.sidebar.expander("Scores Points"):
-    p_nssd = st.number_input("NSSD (Very unsatisfied, Unsatisfactory, Normal)", value=2.0)
-    p_fcr = st.number_input("FCR (If 'N' or 'No')", value=2.0)
+    p_nssd = st.number_input("NSSD Point (Per Issue Occurrence)", value=2.0)
+    p_fcr = st.number_input("FCR Point (Per 'N'/'No' Occurrence)", value=2.0)
     p_feedback = st.number_input("Feedback (If 'Yes')", value=1.0)
     p_top3 = st.number_input("Search Top 3", value=1.0)
     p_top10 = st.number_input("Search Top 10", value=0.5)
-    # فصل معيار QA و RCA
     p_qa = st.number_input("QA Issue (If 'Yes')", value=1.0)
     p_rca = st.number_input("RCA Issue (If 'Yes')", value=1.0)
 
@@ -72,7 +71,7 @@ with st.sidebar.expander("🔄 Column Name Mapping (Alternative Names)"):
     alt_qa = st.text_input("Alternative names for 'QA Issues'", placeholder="QA_Issue, QA_Flag")
     alt_rca = st.text_input("Alternative names for 'RCA Issues'", placeholder="RCA_Issue, RCA_Flag")
 
-# --- 3. Base Template Columns (شامل الخانات الجديدة) ---
+# --- 3. Base Template Columns ---
 base_template_cols = [
     'Knowledge ID', 
     'Knowledge Title', 
@@ -106,15 +105,11 @@ st.subheader("📤 Step 1: Upload Excel Files")
 uploaded_files = st.file_uploader("Upload all Excel files", type=["xlsx"], accept_multiple_files=True)
 
 if uploaded_files:
-    # Trigger button so execution only begins when explicitly requested
     if st.button("⚡ Extract & Merge Data"):
         try:
             all_extracted_rows = []
-
-            # Advanced regex to match: en-us00406918, en-us-vol00731263, en-us-map16019302
             id_pattern = re.compile(r'en-us(?:-[a-zA-Z0-9]+)?\d+', re.IGNORECASE)
 
-            # Prepare progress bar indicators
             total_files = len(uploaded_files)
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -124,7 +119,6 @@ if uploaded_files:
                 num_sheets = len(xls.sheet_names)
 
                 for sheet_idx, sheet_name in enumerate(xls.sheet_names):
-                    # Update progress percentage
                     current_progress = (file_idx + (sheet_idx + 1) / num_sheets) / total_files
                     progress_bar.progress(min(current_progress, 1.0))
                     status_text.text(f"Processing File {file_idx + 1}/{total_files}: '{uploaded_file.name}' | Sheet: '{sheet_name}'...")
@@ -132,25 +126,19 @@ if uploaded_files:
                     df_temp = pd.read_excel(xls, sheet_name=sheet_name)
                     df_temp.columns = [str(c).strip() for c in df_temp.columns]
 
-                    # معرف فريد للشيت لتسجيل التكرارات لكل شيت بشكل مستقل
-                    sheet_source_id = f"{file_idx}_{sheet_idx}"
-
-                    # Scan rows for matches
+                    # تتبع واستخراج الفريد لكل صف لحماية الحساب لو الـ ID اتكرر ف نفس الصف بـ أعمدة مختلفة
                     for idx, row in df_temp.iterrows():
                         row_ids = set()
-                        
                         for col in df_temp.columns:
                             cell_value = str(row[col])
-                            # Extract ALL matches within the cell
                             matches = id_pattern.findall(cell_value)
                             for match in matches:
                                 row_ids.add(match.lower())
                         
-                        # Generate an entry for every distinct Knowledge ID found in this row
+                        # الصف كله يعامل كـ Entry واحد فقط لكل ID فريد تم إيجاده فيه
                         for found_id in row_ids:
                             row_data = row.to_dict()
                             row_data['Knowledge ID'] = found_id
-                            row_data['_Sheet_Source'] = sheet_source_id
                             all_extracted_rows.append(row_data)
 
             progress_bar.progress(1.0)
@@ -161,7 +149,7 @@ if uploaded_files:
             else:
                 raw_df = pd.DataFrame(all_extracted_rows)
 
-                # Column name unification (معالجة كافة الأعمدة)
+                # Column name unification
                 mapping_rules = {
                     'Knowledge Title': [x.strip() for x in alt_title.split(',') if x.strip()],
                     'Knowledge Type': [x.strip() for x in alt_type.split(',') if x.strip()],
@@ -181,52 +169,42 @@ if uploaded_files:
                         if alt in raw_df.columns:
                             raw_df[target_col] = raw_df[target_col].fillna(raw_df[alt])
 
-                # حساب عدد مرات تكرار الـ ID داخل كل شيت على حدة
-                sheet_counts = raw_df.groupby(['Knowledge ID', '_Sheet_Source']).size().reset_index(name='Sheet_Occurrences')
-
-                # دمج ذكي يلتقط أي نتيجة سلبية في NSSD أو FCR لو ظهرت في أي مرة
-                def aggregate_smart_group(group):
+                # تجميع البيانات وحساب تكرارات المشاكل فقط بناءً على الحالات الفريدة (الصفوف)
+                def aggregate_problems(group):
                     res = group.iloc[0].to_dict()
-                    
-                    # فحص NSSD السلبي عبر كل مرات الظهور
-                    nssd_vals = [str(x).strip().lower() for x in group['NSSD'].dropna()]
-                    bad_nssds = [x for x in nssd_vals if x in ['1', '2', '3', 'very unsatisfied', 'unsatisfactory', 'normal']]
-                    if bad_nssds:
-                        res['NSSD'] = bad_nssds[0]
 
-                    # فحص FCR السلبي عبر كل مرات الظهور
+                    # 1. عد تكرارات مشاكل FCR (الصفوف الفريدة التي احتوت على N أو No)
                     fcr_vals = [str(x).strip().lower() for x in group['FCR'].dropna()]
-                    if any(x in ['n', 'no'] for x in fcr_vals):
-                        res['FCR'] = 'N'
+                    fcr_issues_count = sum(1 for x in fcr_vals if x in ['n', 'no'])
+                    res['FCR_Issue_Count'] = fcr_issues_count
+                    res['FCR'] = 'N' if fcr_issues_count > 0 else (fcr_vals[0] if fcr_vals else None)
 
-                    # فحص أية إجابات Yes في الخانات الأخرى
+                    # 2. عد تكرارات مشاكل NSSD (الصفوف الفريدة التي احتوت على قيم المشاكل)
+                    bad_nssd_list = ['1', '2', '3', 'very unsatisfied', 'unsatisfactory', 'normal']
+                    nssd_vals = [str(x).strip().lower() for x in group['NSSD'].dropna()]
+                    nssd_issues_count = sum(1 for x in nssd_vals if x in bad_nssd_list)
+                    res['NSSD_Issue_Count'] = nssd_issues_count
+                    res['NSSD'] = 'Issue' if nssd_issues_count > 0 else (nssd_vals[0] if nssd_vals else None)
+
+                    # 3. الفحص عن أية إجابات Yes في الخانات الأخرى
                     for bool_col in ['Feedback"Yes or No"', 'QA Issues"Yes or No"', 'RCA Issues"Yes or No"']:
                         vals = [str(x).strip().lower() for x in group[bool_col].dropna()]
                         if any(x == 'yes' for x in vals):
                             res[bool_col] = 'Yes'
 
-                    # أعلى عدد مشاهدات
+                    # أقصى عدد Views
                     try:
                         res['Views'] = group['Views'].astype(float).max()
                     except: pass
 
                     return pd.Series(res)
 
-                merged_df = raw_df.groupby('Knowledge ID', as_index=False).apply(aggregate_smart_group).reset_index(drop=True)
-
-                # دمج أقصى عدد تكرارات في شيت واحد لتطبيقه في المعالجة
-                max_sheet_rep = sheet_counts.groupby('Knowledge ID')['Sheet_Occurrences'].max().reset_index()
-                merged_df = merged_df.merge(max_sheet_rep, on='Knowledge ID', how='left')
-
-                # Filter down to the required template columns only
-                final_cols_needed = [col for col in base_template_cols if col in merged_df.columns] + ['Sheet_Occurrences']
-                clean_df = merged_df[final_cols_needed].copy()
+                clean_df = raw_df.groupby('Knowledge ID', as_index=False).apply(aggregate_problems).reset_index(drop=True)
 
                 for col in base_template_cols:
                     if col not in clean_df.columns:
                         clean_df[col] = None
 
-                # Store the cleaned DataFrame in Session State to retain across interactions
                 st.session_state['clean_df'] = clean_df
 
         except Exception as e:
@@ -248,55 +226,51 @@ if 'clean_df' in st.session_state:
 
     # Calculation logic
     def calculate_priority(row):
-        base_score = 0.0
+        score = 0.0
         
-        # Views مع الحدود الديناميكية من الـ Sidebar
+        # Views
         try:
             v = float(row.get('Views', 0))
-            if v >= v_high_thresh: base_score += p_v_1k
-            elif v >= v_med_thresh: base_score += p_v_100
-            elif v >= v_low_thresh: base_score += p_v_50
+            if v >= v_high_thresh: score += p_v_1k
+            elif v >= v_med_thresh: score += p_v_100
+            elif v >= v_low_thresh: score += p_v_50
         except: pass
 
-        # NSSD (Checks for 1, 2, 3 OR Very unsatisfied, Unsatisfactory, Normal)
-        nssd_val = str(row.get('NSSD', '')).strip().lower()
-        if nssd_val in ['1', '2', '3', 'very unsatisfied', 'unsatisfactory', 'normal']:
-            base_score += p_nssd
+        # NSSD: ضرب النقاط في عدد الصفوف (الكيسات) الفريدة التي طرأت فيها المشكلة فقط
+        nssd_issues = float(row.get('NSSD_Issue_Count', 0))
+        score += (nssd_issues * p_nssd)
 
-        # FCR (Points if 'n' OR 'no')
-        fcr_val = str(row.get('FCR', '')).strip().lower()
-        if fcr_val in ["n", "no"]:
-            base_score += p_fcr
+        # FCR: ضرب النقاط في عدد الصفوف (الكيسات) الفريدة التي طرأت فيها المشكلة فقط
+        fcr_issues = float(row.get('FCR_Issue_Count', 0))
+        score += (fcr_issues * p_fcr)
 
-        # Feedback (Points if 'Yes')
+        # Feedback
         fb_val = str(row.get('Feedback"Yes or No"', '')).strip().lower()
         if fb_val == "yes":
-            base_score += p_feedback
+            score += p_feedback
 
         # Search Accuracy
         acc = str(row.get('Search Accuracy', '')).strip().lower()
-        if "top 3" in acc: base_score += p_top3
-        elif "top 10" in acc: base_score += p_top10
+        if "top 3" in acc: score += p_top3
+        elif "top 10" in acc: score += p_top10
 
-        # QA Issues (Points if 'Yes')
+        # QA Issues
         qa_val = str(row.get('QA Issues"Yes or No"', '')).strip().lower()
         if qa_val == "yes":
-            base_score += p_qa
+            score += p_qa
 
-        # RCA Issues (Points if 'Yes')
+        # RCA Issues
         rca_val = str(row.get('RCA Issues"Yes or No"', '')).strip().lower()
         if rca_val == "yes":
-            base_score += p_rca
+            score += p_rca
 
         # Custom Field
         if custom_col_name in clean_df.columns:
             c_val = str(row.get(custom_col_name, '')).strip().lower()
             if c_val == "yes":
-                base_score += custom_col_points
+                score += custom_col_points
 
-        # ضرب النقاط الأساسية في عدد مرات التكرار داخل الشيت الواحد
-        sheet_multiplier = float(row.get('Sheet_Occurrences', 1))
-        return base_score * sheet_multiplier
+        return score
 
     st.subheader("🚀 Step 2: Run Prioritization")
     if st.button("🚀 Calculate & Rank Priority"):
