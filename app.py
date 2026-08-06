@@ -22,27 +22,38 @@ def to_excel(df):
 # --- 2. Sidebar Configuration ---
 st.sidebar.header("⚙️ Configure Points & Thresholds")
 
-# Views Thresholds Cards
-with st.sidebar.expander("👁️ Views Thresholds & Points", expanded=True):
+# Views Thresholds Cards (5 Ranges UI)
+with st.sidebar.expander("👁️ Views Thresholds & Points (5 Ranges)", expanded=True):
     st.markdown("---")
     
-    # High Views Range Card
+    # 1. Very High Views Range Card (> 10,000)
     with st.container(border=True):
-        st.markdown("#### 🚀 High Views Range")
-        v_high_thresh = st.number_input("Threshold (Min Views)", value=1000, step=50, key="vh_t")
-        p_v_1k = st.number_input("Points Awarded", value=2.0, key="vh_p")
+        st.markdown("#### 🚀 Very High Range (> 10,000)")
+        v_vh_thresh = st.number_input("Threshold (Min Views)", value=10000, step=500, key="vvh_t")
+        p_v_10k = st.number_input("Points Awarded", value=3.0, key="vvh_p")
+
+    # 2. High Views Range Card (5,000 - 10,000)
+    with st.container(border=True):
+        st.markdown("#### 🔥 High Range (5,000 - 10,000)")
+        v_h_thresh = st.number_input("Threshold (Min Views)", value=5000, step=250, key="vh_t")
+        p_v_5k = st.number_input("Points Awarded", value=2.5, key="vh_p")
     
-    # Medium Views Range Card
+    # 3. Medium Views Range Card (1,000 - 5,000)
     with st.container(border=True):
-        st.markdown("#### 📈 Medium Views Range")
-        v_med_thresh = st.number_input("Threshold (Min Views)", value=100, step=10, key="vm_t")
-        p_v_100 = st.number_input("Points Awarded", value=1.0, key="vm_p")
+        st.markdown("#### 📈 Medium Range (1,000 - 5,000)")
+        v_m_thresh = st.number_input("Threshold (Min Views)", value=1000, step=100, key="vm_t")
+        p_v_1k = st.number_input("Points Awarded", value=2.0, key="vm_p")
     
-    # Low Views Range Card
+    # 4. Low-Medium Views Range Card (500 - 1,000)
     with st.container(border=True):
-        st.markdown("#### 📉 Low Views Range")
-        v_low_thresh = st.number_input("Threshold (Min Views)", value=50, step=5, key="vl_t")
-        p_v_50 = st.number_input("Points Awarded", value=0.50, key="vl_p")
+        st.markdown("#### 📊 Low-Medium Range (500 - 1,000)")
+        v_lm_thresh = st.number_input("Threshold (Min Views)", value=500, step=50, key="vlm_t")
+        p_v_500 = st.number_input("Points Awarded", value=1.0, key="vlm_p")
+
+    # 5. Low Views Range Card (< 500)
+    with st.container(border=True):
+        st.markdown("#### 📉 Low Range (< 500)")
+        p_v_below500 = st.number_input("Points Awarded", value=0.50, key="vl_p")
         
     st.markdown("---")
 
@@ -182,7 +193,6 @@ if uploaded_files:
                     # 2. عد تكرارات مشاكل NSSD والحفاظ على القيمة النصية الأصلية
                     bad_nssd_list = ['1', '2', '3', 'very unsatisfied', 'unsatisfactory', 'normal']
                     
-                    # استخراج القيم النصية الأصلية غير التافهة
                     raw_nssd_list = [x for x in group['NSSD'].dropna() if str(x).strip()]
                     
                     nssd_issues_count = 0
@@ -236,16 +246,23 @@ if 'clean_df' in st.session_state:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # Calculation logic
+    # Calculation logic (5 Views Ranges)
     def calculate_priority(row):
         score = 0.0
         
-        # Views
+        # Views مع النطاقات الخمسة الجديدة
         try:
             v = float(row.get('Views', 0))
-            if v >= v_high_thresh: score += p_v_1k
-            elif v >= v_med_thresh: score += p_v_100
-            elif v >= v_low_thresh: score += p_v_50
+            if v >= v_vh_thresh: 
+                score += p_v_10k            # > 10,000
+            elif v >= v_h_thresh: 
+                score += p_v_5k             # 5,000 - 10,000
+            elif v >= v_m_thresh: 
+                score += p_v_1k             # 1,000 - 5,000
+            elif v >= v_lm_thresh: 
+                score += p_v_500            # 500 - 1,000
+            else: 
+                score += p_v_below500       # < 500
         except: pass
 
         # NSSD: ضرب النقاط في عدد الصفوف (الكيسات) الفريدة التي طرأت فيها المشكلة فقط
