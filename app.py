@@ -30,41 +30,41 @@ with st.sidebar.expander("👁️ Views Thresholds & Points (5 Ranges)", expande
     with st.container(border=True):
         st.markdown("#### 🚀 Very High Range (> 10,000)")
         v_vh_thresh = st.number_input("Threshold (Min Views)", value=10000, step=500, key="vvh_t")
-        p_v_10k = st.number_input("Points Awarded", value=3.0, key="vvh_p")
+        p_v_10k = st.number_input("Points Awarded", value=10.0, key="vvh_p")
 
     # 2. High Views Range Card (5,000 - 10,000)
     with st.container(border=True):
         st.markdown("#### 🔥 High Range (5,000 - 10,000)")
         v_h_thresh = st.number_input("Threshold (Min Views)", value=5000, step=250, key="vh_t")
-        p_v_5k = st.number_input("Points Awarded", value=2.5, key="vh_p")
+        p_v_5k = st.number_input("Points Awarded", value=5.0, key="vh_p")
     
     # 3. Medium Views Range Card (1,000 - 5,000)
     with st.container(border=True):
         st.markdown("#### 📈 Medium Range (1,000 - 5,000)")
         v_m_thresh = st.number_input("Threshold (Min Views)", value=1000, step=100, key="vm_t")
-        p_v_1k = st.number_input("Points Awarded", value=2.0, key="vm_p")
+        p_v_1k = st.number_input("Points Awarded", value=3.0, key="vm_p")
     
     # 4. Low-Medium Views Range Card (500 - 1,000)
     with st.container(border=True):
         st.markdown("#### 📊 Low-Medium Range (500 - 1,000)")
         v_lm_thresh = st.number_input("Threshold (Min Views)", value=500, step=50, key="vlm_t")
-        p_v_500 = st.number_input("Points Awarded", value=1.0, key="vlm_p")
+        p_v_500 = st.number_input("Points Awarded", value=2.0, key="vlm_p")
 
     # 5. Low Views Range Card (< 500)
     with st.container(border=True):
         st.markdown("#### 📉 Low Range (< 500)")
-        p_v_below500 = st.number_input("Points Awarded", value=0.50, key="vl_p")
+        p_v_below500 = st.number_input("Points Awarded", value=1.0, key="vl_p")
         
     st.markdown("---")
 
 with st.sidebar.expander("Scores Points"):
-    p_nssd = st.number_input("NSSD Point (Per Issue Occurrence)", value=2.0)
-    p_fcr = st.number_input("FCR Point (Per 'N'/'No' Occurrence)", value=2.0)
-    p_feedback = st.number_input("Feedback (If 'Yes')", value=1.0)
-    p_top3 = st.number_input("Search Top 3", value=1.0)
-    p_top10 = st.number_input("Search Top 10", value=0.5)
-    p_qa = st.number_input("QA Issue (If 'Yes')", value=1.0)
-    p_rca = st.number_input("RCA Issue (If 'Yes')", value=1.0)
+    p_nssd = st.number_input("NSSD Point (Per Issue Occurrence)", value=5.0)
+    p_fcr = st.number_input("FCR Point (Per 'N'/'No' Occurrence)", value=5.0)
+    p_feedback = st.number_input("Feedback (If 'Yes')", value=3.0)
+    p_top3 = st.number_input("Search Top 3", value=3.0)
+    p_top10 = st.number_input("Search Top 10", value=1.0)
+    p_qa = st.number_input("QA Issue (If 'Yes')", value=3.0)
+    p_rca = st.number_input("RCA Issue (If 'Yes')", value=3.0)
 
 with st.sidebar.expander("➕ Add Custom Field"):
     custom_col_name = st.text_input("Column Name in Excel", placeholder="e.g. Critical_Error")
