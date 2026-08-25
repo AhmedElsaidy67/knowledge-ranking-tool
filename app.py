@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import re
+from datetime import datetime, timedelta
 
 # 1. Page Configuration
 st.set_page_config(page_title="Knowledge Prioritization Tool", layout="wide")
@@ -74,6 +75,7 @@ with st.sidebar.expander("🔄 Column Name Mapping (Alternative Names)"):
     st.caption("Provide comma-separated alternative column names if header names differ across sheets.")
     alt_title = st.text_input("Alternative names for 'Knowledge Title'", placeholder="Title, Article_Title")
     alt_type = st.text_input("Alternative names for 'Knowledge Type'", placeholder="Type, Article_Type")
+    alt_date = st.text_input("Alternative names for 'Last update date'", placeholder="Update_Date, Modified_Date, Last_Modified")
     alt_views = st.text_input("Alternative names for 'Views'", placeholder="Page_Views, View_Count")
     alt_nssd = st.text_input("Alternative names for 'NSSD'", placeholder="NSSD_Score, Priority")
     alt_fcr = st.text_input("Alternative names for 'FCR'", placeholder="FCR_Status, First_Call")
@@ -82,11 +84,12 @@ with st.sidebar.expander("🔄 Column Name Mapping (Alternative Names)"):
     alt_qa = st.text_input("Alternative names for 'QA Issues'", placeholder="QA_Issue, QA_Flag")
     alt_rca = st.text_input("Alternative names for 'RCA Issues'", placeholder="RCA_Issue, RCA_Flag")
 
-# --- 3. Base Template Columns ---
+# --- 3. Base Template Columns (شامل Last update date) ---
 base_template_cols = [
     'Knowledge ID', 
     'Knowledge Title', 
     'Knowledge Type', 
+    'Last update date',
     'Views', 
     'NSSD', 
     'FCR', 
@@ -137,7 +140,7 @@ if uploaded_files:
                     df_temp = pd.read_excel(xls, sheet_name=sheet_name)
                     df_temp.columns = [str(c).strip() for c in df_temp.columns]
 
-                    # تتبع واستخراج الفريد لكل صف لحماية الحساب لو الـ ID اتكرر ف نفس الصف بـ أعمدة مختلفة
+                    # استخراج الـ IDs الفريدة في كل صف لحماية الحساب لو الـ ID اتكرر ف نفس الصف بـ أعمدة مختلفة
                     for idx, row in df_temp.iterrows():
                         row_ids = set()
                         for col in df_temp.columns:
@@ -164,6 +167,7 @@ if uploaded_files:
                 mapping_rules = {
                     'Knowledge Title': [x.strip() for x in alt_title.split(',') if x.strip()],
                     'Knowledge Type': [x.strip() for x in alt_type.split(',') if x.strip()],
+                    'Last update date': [x.strip() for x in alt_date.split(',') if x.strip()],
                     'Views': [x.strip() for x in alt_views.split(',') if x.strip()],
                     'NSSD': [x.strip() for x in alt_nssd.split(',') if x.strip()],
                     'FCR': [x.strip() for x in alt_fcr.split(',') if x.strip()],
@@ -219,6 +223,11 @@ if uploaded_files:
                         res['Views'] = group['Views'].astype(float).max()
                     except: pass
 
+                    # استخراج أحدث تاريخ متاح في حالة وجود أكثر من سطر
+                    date_vals = group['Last update date'].dropna()
+                    if not date_vals.empty:
+                        res['Last update date'] = date_vals.iloc[0]
+
                     return pd.Series(res)
 
                 clean_df = raw_df.groupby('Knowledge ID', as_index=False).apply(aggregate_problems).reset_index(drop=True)
@@ -246,8 +255,21 @@ if 'clean_df' in st.session_state:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # Calculation logic (5 Views Ranges)
+    # Calculation logic (5 Views Ranges + شرط الاستبعاد)
     def calculate_priority(row):
+        # فحص شرط الاستبعاد: لو تم تحديثه خلال شهر (30 يوم) ونوعه Services -> تصفير السكور
+        k_type = str(row.get('Knowledge Type', '')).strip().lower()
+        date_val = row.get('Last update date')
+        
+        if 'services' in k_type and pd.notna(date_val):
+            try:
+                parsed_date = pd.to_datetime(date_val)
+                # فحص ما إذا كان التاريخ خلال الـ 30 يوماً الماضية
+                if parsed_date >= (datetime.now() - timedelta(days=30)):
+                    return 0.0 # تصفير النقاط تماماً
+            except:
+                pass
+
         score = 0.0
         
         # Views مع النطاقات الخمسة الجديدة
@@ -308,16 +330,19 @@ if 'clean_df' in st.session_state:
         # Sort descending
         df_sorted = clean_df.sort_values(by='Final_Score', ascending=False).reset_index(drop=True)
 
-        def get_rank_label(i):
+        def get_rank_label(row, i):
+            if row['Final_Score'] == 0.0:
+                return "Low (Score 0)"
             if i < 50: return "High (Top 50)"
             elif i < 100: return "Medium (Top 100)"
             elif i < 200: return "Normal (Top 200)"
             else: return "Low (Over 200)"
         
-        df_sorted['Category'] = [get_rank_label(i) for i in range(len(df_sorted))]
+        df_sorted['Category'] = [get_rank_label(df_sorted.iloc[i], i) for i in range(len(df_sorted))]
 
-        # Reorder columns to show essential identifier & title data first
-        export_columns = ['Knowledge ID', 'Knowledge Title', 'Knowledge Type', 'Final_Score', 'Category'] + [c for c in base_template_cols if c not in ['Knowledge ID', 'Knowledge Title', 'Knowledge Type']]
+        # Reorder columns to show essential identifier, title, type & date first
+        first_cols = ['Knowledge ID', 'Knowledge Title', 'Knowledge Type', 'Last update date', 'Final_Score', 'Category']
+        export_columns = first_cols + [c for c in base_template_cols if c not in first_cols]
         df_final_export = df_sorted[export_columns]
 
         st.balloons()
