@@ -257,15 +257,15 @@ if 'clean_df' in st.session_state:
 
     # Calculation logic (5 Views Ranges + شرط الاستبعاد)
     def calculate_priority(row):
-        # فحص شرط الاستبعاد: لو تم تحديثه خلال شهر (30 يوم) ونوعه Services -> تصفير السكور
+        # فحص شرط الاستبعاد: لو تم تحديثه خلال الستة أشهر (180 يوم) ونوعه Services -> تصفير السكور
         k_type = str(row.get('Knowledge Type', '')).strip().lower()
         date_val = row.get('Last update date')
         
         if 'services' in k_type and pd.notna(date_val):
             try:
                 parsed_date = pd.to_datetime(date_val)
-                # فحص ما إذا كان التاريخ خلال الـ 30 يوماً الماضية
-                if parsed_date >= (datetime.now() - timedelta(days=30)):
+                # فحص ما إذا كان التاريخ خلال الـ 180 يوماً الماضية
+                if parsed_date >= (datetime.now() - timedelta(days=180)):
                     return 0.0 # تصفير النقاط تماماً
             except:
                 pass
